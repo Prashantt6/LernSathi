@@ -38,6 +38,8 @@ for key, val in _defaults.items():
 # Clear widget-bound keys BEFORE their widgets are instantiated this run
 if st.session_state.pop("clear_chat_input", False):
     st.session_state.chat_text_input = ""
+if st.session_state.pop("clear_chat_audio_input", False):
+    st.session_state.chat_audio_input = None
 
 
 # --------------------------------------------------
@@ -233,7 +235,7 @@ if st.session_state.show_recorder and not st.session_state.is_processing \
 
     if recorded is not None:
         st.session_state.voice_recording = recorded.read()
-        st.session_state["chat_audio_input"] = None   # reset widget for next time
+        st.session_state.clear_chat_audio_input = True   # reset widget next run
         st.session_state.show_recorder = False
         st.rerun()
 
