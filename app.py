@@ -60,10 +60,12 @@ service = load_service()
 
 def paint():
     """Redraw the conversation from session state."""
+    autoplay_idx = st.session_state.pop("autoplay_idx", None)
     render_chat(
         messages=st.session_state.messages,
         is_processing=st.session_state.is_processing,
         audio_history=st.session_state.audio_history,
+        autoplay_idx=autoplay_idx,
     )
 
 
@@ -122,20 +124,19 @@ def run_pipeline(user_text: str | None, audio_bytes: bytes | None):
         paint()
         st.session_state.is_processing = True
 
-        # ---------- Stage 2: tutor responds ----------
+        # ---------- Stage 2: tutor responds (text prepared) ----------
         with st.spinner("🤔 LernSathi is responding…"):
             reply = service.generate_reply(st.session_state.messages)
 
-        st.session_state.messages.append({"role": "assistant", "content": reply})
-        st.session_state.is_processing = False
-        paint()
-        st.session_state.is_processing = True
-
-        # ---------- Stage 3: voice response ----------
+        # ---------- Stage 3: voice response (prepared BEFORE showing either) ----------
         with st.spinner("🔊 Preparing the voice response…"):
             audio_path = service.speak(reply)
 
-        st.session_state.audio_history[len(st.session_state.messages) - 1] = audio_path
+        # Both ready -> shown together on the post-rerun paint (with autoplay)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+        last_idx = len(st.session_state.messages) - 1
+        st.session_state.audio_history[last_idx] = audio_path
+        st.session_state.autoplay_idx = last_idx
 
     except Exception as e:
         _rollback_unpaired_user()

@@ -1,3 +1,4 @@
+import base64
 import streamlit as st
 from pathlib import Path
 
@@ -74,7 +75,18 @@ def _local_css():
 # Single message
 # --------------------------------------------------
 
-def _render_message(message: dict, idx: int, audio_history: dict):
+def _autoplay_audio(path: str):
+    with open(path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    st.markdown(
+        '<audio controls autoplay style="width:100%;">'
+        f'<source src="data:audio/wav;base64,{b64}" type="audio/wav">'
+        "</audio>",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_message(message: dict, idx: int, audio_history: dict, autoplay: bool = False):
     role = message["role"]
 
     if role == "user":
@@ -87,8 +99,11 @@ def _render_message(message: dict, idx: int, audio_history: dict):
             st.markdown(message["content"])
             audio_path = audio_history.get(idx)
             if audio_path and Path(audio_path).exists():
-                with open(audio_path, "rb") as f:
-                    st.audio(f.read(), format="audio/wav")
+                if autoplay:
+                    _autoplay_audio(audio_path)
+                else:
+                    with open(audio_path, "rb") as f:
+                        st.audio(f.read(), format="audio/wav")
 
 
 # --------------------------------------------------
@@ -135,7 +150,8 @@ def _welcome_state():
 # Public entry point
 # --------------------------------------------------
 
-def render_chat(messages: list, is_processing: bool, audio_history: dict):
+def render_chat(messages: list, is_processing: bool, audio_history: dict,
+                autoplay_idx: int | None = None):
     _local_css()
 
     if not messages:
@@ -143,7 +159,7 @@ def render_chat(messages: list, is_processing: bool, audio_history: dict):
         return
 
     for idx, msg in enumerate(messages):
-        _render_message(msg, idx, audio_history)
+        _render_message(msg, idx, audio_history, autoplay=(idx == autoplay_idx))
 
     if is_processing:
         st.caption("⏳ Working on your message…")
