@@ -3,6 +3,7 @@ import uuid
 import streamlit as st
 
 from ui.chat import render_chat, _local_css
+from ui.mic_widget import record_mic
 from services.conversation_service import ConversationService
 
 
@@ -26,8 +27,9 @@ _local_css()
 _defaults = {
     "messages": [],            # single source of truth for the chat
     "audio_history": {},       # assistant msg index -> tts wav path
-    "voice_recording": None,   # raw bytes of a reviewed-but-unsent recording
-    "show_recorder": False,    # mic panel open?
+    "is_recording": False,     # mic capture in progress
+    "mic_action": "idle",      # pending command for the mic component
+    "last_mic_id": 0,          # dedupe guard for emitted recordings
     "is_processing": False,    # global pipeline lock
     "processing_stage": "",
 }
@@ -38,8 +40,6 @@ for key, val in _defaults.items():
 # Clear widget-bound keys BEFORE their widgets are instantiated this run
 if st.session_state.pop("clear_chat_input", False):
     st.session_state.chat_text_input = ""
-if st.session_state.pop("clear_chat_audio_input", False):
-    st.session_state.chat_audio_input = None
 
 
 # --------------------------------------------------
@@ -83,8 +83,8 @@ def _rollback_unpaired_user():
 def _finish():
     st.session_state.is_processing = False
     st.session_state.processing_stage = ""
-    st.session_state.voice_recording = None
-    st.session_state.show_recorder = False
+    st.session_state.is_recording = False
+    st.session_state.mic_action = "idle"
     st.session_state.clear_chat_input = True
 
 
@@ -163,8 +163,8 @@ with st.sidebar:
     if st.button("＋ New conversation", use_container_width=True):
         for k in ("messages", "audio_history"):
             st.session_state[k] = {} if k == "audio_history" else []
-        st.session_state.voice_recording = None
-        st.session_state.show_recorder = False
+        st.session_state.is_recording = False
+        st.session_state.mic_action = "idle"
         st.session_state.is_processing = False
         st.session_state.processing_stage = ""
         st.session_state.chat_text_input = ""
@@ -193,59 +193,13 @@ paint()
 
 
 # --------------------------------------------------
-# Voice review card (record -> review -> Send / Cancel)
-# --------------------------------------------------
-
-if st.session_state.voice_recording is not None and not st.session_state.is_processing:
-    with st.container(border=True):
-        st.markdown("**🎤 Your recording**")
-        st.caption("Listen back, then send it to LernSathi — or try again.")
-        st.audio(st.session_state.voice_recording, format="audio/wav")
-
-        c1, c2, spacer = st.columns([1, 1, 3])
-        with c1:
-            send_voice = st.button(
-                "Send ➤", type="primary",
-                use_container_width=True, key="btn_send_voice",
-            )
-        with c2:
-            cancel_voice = st.button(
-                "Cancel", use_container_width=True, key="btn_cancel_voice",
-            )
-
-    if cancel_voice:
-        st.session_state.voice_recording = None
-        st.rerun()
-
-    if send_voice and not st.session_state.is_processing:
-        run_pipeline(user_text=None, audio_bytes=st.session_state.voice_recording)
-
-
-# --------------------------------------------------
-# Recorder panel (opened by the mic button)
-# --------------------------------------------------
-
-if st.session_state.show_recorder and not st.session_state.is_processing \
-        and st.session_state.voice_recording is None:
-
-    with st.container(border=True):
-        st.markdown("**🎙️ Record your German message**")
-        st.caption("Press the record button, speak, then press stop.")
-        recorded = st.audio_input("Recorder", key="chat_audio_input",
-                                  label_visibility="collapsed")
-
-    if recorded is not None:
-        st.session_state.voice_recording = recorded.read()
-        st.session_state.clear_chat_audio_input = True   # reset widget next run
-        st.session_state.show_recorder = False
-        st.rerun()
-
-
-# --------------------------------------------------
-# Composer  [ input ][ 🎤 ][ ➤ ]
+# Composer  [ input ][ 🎤 / ✕ ][ ➤ ]
+# idle      : [ input ][ 🎤 ][ ➤ ]   (➤ sends text)
+# recording : [ input ][ ✕  ][ ➤ ]   (➤ stops & sends audio, ✕ discards)
 # --------------------------------------------------
 
 disabled = st.session_state.is_processing
+recording = st.session_state.is_recording and not disabled
 
 col_a, col_b, col_c = st.columns([8, 0.7, 0.7])
 
@@ -259,21 +213,42 @@ with col_a:
     )
 
 with col_b:
-    mic_clicked = st.button(
-        "🎤", disabled=disabled,
-        use_container_width=True, key="btn_mic",
-    )
+    if recording:
+        if st.button("✕", use_container_width=True, key="btn_cancel_rec"):
+            st.session_state.is_recording = False
+            st.session_state.mic_action = "idle"
+            st.rerun()
+    elif st.button("🎤", disabled=disabled, use_container_width=True, key="btn_mic"):
+        st.session_state.is_recording = True
+        st.rerun()
 
 with col_c:
-    send_clicked = st.button(
-        "➤", type="primary",
-        disabled=disabled or not typed,
-        use_container_width=True, key="btn_send",
-    )
+    if recording:
+        if st.button("➤", type="primary", use_container_width=True,
+                     key="btn_send_rec"):
+            st.session_state.mic_action = "stop"
+            st.rerun()
+    else:
+        send_clicked = st.button(
+            "➤", type="primary",
+            disabled=disabled or not typed,
+            use_container_width=True, key="btn_send",
+        )
+        if send_clicked and typed and not disabled:
+            run_pipeline(user_text=typed, audio_bytes=None)
 
-if mic_clicked and not disabled:
-    st.session_state.show_recorder = True
-    st.rerun()
+if recording:
+    st.caption("🔴 Recording… press **➤** to send or **✕** to discard")
 
-if send_clicked and typed and not disabled:
-    run_pipeline(user_text=typed, audio_bytes=None)
+    result = record_mic(action=st.session_state.mic_action)
+    st.session_state.mic_action = "idle"
+
+    if isinstance(result, dict) and "error" in result:
+        st.session_state.is_recording = False
+        _fail(f"Microphone unavailable ({result['error']}).", Exception(result["error"]))
+        st.rerun()
+    elif isinstance(result, dict) and result.get("id") \
+            and result["id"] != st.session_state.last_mic_id:
+        st.session_state.last_mic_id = result["id"]
+        st.session_state.is_recording = False
+        run_pipeline(user_text=None, audio_bytes=result["bytes"])

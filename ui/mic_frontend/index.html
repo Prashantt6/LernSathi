@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+</style>
+</head>
+<body>
+<script>
+(function () {
+  "use strict";
+
+  var started = false;
+  var audioCtx = null;
+  var sourceNode = null;
+  var procNode = null;
+  var mediaStream = null;
+  var samples = [];
+  var totalLen = 0;
+
+  function send(type, data) {
+    var msg = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
+    window.parent.postMessage(msg, "*");
+  }
+
+  function componentReady() {
+    send("streamlit:componentReady", { apiVersion: 1 });
+    send("streamlit:setFrameHeight", { height: 0 });
+  }
+
+  function setComponentValue(value) {
+    send("streamlit:setComponentValue", { value: value, dataType: "json" });
+  }
+
+  function onRender(event) {
+    if (!event.data || event.data.type !== "streamlit:render") return;
+    var action = (event.data.args && event.data.args.action) || "idle";
+    if (!started) {
+      start();
+    } else if (action === "stop") {
+      stop(true);
+    }
+    // action === "idle" while recording -> keep going
+  }
+
+  async function start() {
+    if (started) return;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+      });
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") {
+        try { await audioCtx.resume(); } catch (e) {}
+      }
+      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+      procNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      samples = [];
+      totalLen = 0;
+      procNode.onaudioprocess = function (e) {
+        var d = e.inputBuffer.getChannelData(0);
+        samples.push(new Float32Array(d));
+        totalLen += d.length;
+      };
+      sourceNode.connect(procNode);
+      procNode.connect(audioCtx.destination);
+      started = true;
+    } catch (err) {
+      setComponentValue({ error: String((err && err.message) || err), id: Date.now() });
+    }
+  }
+
+  function mergeSamples() {
+    var out = new Float32Array(totalLen);
+    var off = 0;
+    for (var i = 0; i < samples.length; i++) {
+      out.set(samples[i], off);
+      off += samples[i].length;
+    }
+    return out;
+  }
+
+  function encodeWav(s, rate) {
+    var buf = new ArrayBuffer(44 + s.length * 2);
+    var v = new DataView(buf);
+    function ws(o, t) { for (var i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); }
+    ws(0, "RIFF"); v.setUint32(4, 36 + s.length * 2, true);
+    ws(8, "WAVE"); ws(12, "fmt ");
+    v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true);
+    v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true);
+    v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true);
+    ws(36, "data"); v.setUint32(40, s.length * 2, true);
+    var o = 44;
+    for (var i = 0; i < s.length; i++) {
+      var x = Math.max(-1, Math.min(1, s[i]));
+      v.setInt16(o, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+      o += 2;
+    }
+    return buf;
+  }
+
+  function bufToB64(buf) {
+    var u8 = new Uint8Array(buf), s = "", chunk = 0x8000;
+    for (var i = 0; i < u8.length; i += chunk) {
+      s += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+    }
+    return btoa(s);
+  }
+
+  function stop(emit) {
+    if (!started) return;
+    started = false;
+    var rate = audioCtx.sampleRate;
+    try { procNode.disconnect(); } catch (e) {}
+    try { sourceNode.disconnect(); } catch (e) {}
+    try { mediaStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    try { audioCtx.close(); } catch (e) {}
+    if (emit && totalLen > 0) {
+      var wav = encodeWav(mergeSamples(), rate);
+      setComponentValue({ b64: bufToB64(wav), id: Date.now(), sample_rate: rate });
+    }
+    samples = [];
+    totalLen = 0;
+  }
+
+  window.addEventListener("message", onRender);
+  window.addEventListener("load", componentReady);
+})();
+</script>
+</body>
+</html>
