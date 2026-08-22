@@ -1,7 +1,7 @@
 from pathlib import Path
 import subprocess
 import sys
-
+import uuid
 
 class TextToSpeech:
     def __init__(self, model_path=None):
@@ -31,11 +31,12 @@ class TextToSpeech:
     ) -> str:
 
         if output_path is None:
+            filename = f"response_{uuid.uuid4().hex}.wav"
             output = (
                 self.project_root
                 / "audio"
                 / "output"
-                / "response.wav"
+                / filename
             )
         else:
             output = Path(output_path)
