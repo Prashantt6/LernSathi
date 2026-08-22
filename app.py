@@ -118,18 +118,16 @@ def run_pipeline(user_text: str | None, audio_bytes: bytes | None):
         if not user_text or not user_text.strip():
             raise ValueError("Empty message.")
 
-        # User bubble appears immediately (works for text AND voice)
+        # User bubble is appended now but drawn on the post-rerun paint,
+        # so the conversation never renders twice in one run.
         st.session_state.messages.append({"role": "user", "content": user_text})
-        st.session_state.is_processing = False   # avoid banner during live redraws
-        paint()
-        st.session_state.is_processing = True
 
         # ---------- Stage 2: tutor responds (text prepared) ----------
-        with st.spinner("🤔 LernSathi is responding…"):
+        with st.spinner("LernSathi is responding…"):
             reply = service.generate_reply(st.session_state.messages)
 
         # ---------- Stage 3: voice response (prepared BEFORE showing either) ----------
-        with st.spinner("🔊 Preparing the voice response…"):
+        with st.spinner("Preparing the voice response…"):
             audio_path = service.speak(reply)
 
         # Both ready -> shown together on the post-rerun paint (with autoplay)
@@ -229,13 +227,16 @@ with col_c:
             st.session_state.mic_action = "stop"
             st.rerun()
     else:
-        send_clicked = st.button(
+        text_send_clicked = st.button(
             "➤", type="primary",
             disabled=disabled or not typed,
             use_container_width=True, key="btn_send",
         )
-        if send_clicked and typed and not disabled:
-            run_pipeline(user_text=typed, audio_bytes=None)
+
+# Pipeline runs OUTSIDE any column context so its spinners/errors
+# render full-width instead of squeezed under the send button.
+if not recording and text_send_clicked and typed and not disabled:
+    run_pipeline(user_text=typed, audio_bytes=None)
 
 if recording:
     st.caption("🔴 Recording… press **➤** to send or **✕** to discard")
