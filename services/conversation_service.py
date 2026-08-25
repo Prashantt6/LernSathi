@@ -7,14 +7,22 @@ from ai.llm.model import GermanChatbot
 
 class ConversationService:
 
-    def __init__(self):
+    def __init__(self, level: str = "A1"):
         print("Loading AI models...")
 
         self.stt = SpeechToText("small")
-        self.chatbot = GermanChatbot(model_name="qwen3:1.7b")
+        self.chatbot = GermanChatbot(model_name="qwen3:1.7b", level=level)
         self.tts = TextToSpeech()
 
         print("All AI models loaded.")
+
+    @property
+    def level(self) -> str:
+        return self.chatbot.level
+
+    def set_level(self, level: str):
+        """Switch tutor level without reloading any models."""
+        self.chatbot.set_level(level)
 
     def process_text(
         self,
