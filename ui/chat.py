@@ -58,39 +58,60 @@ def _local_css():
             gap: 0.35rem !important;
         }
 
-        /* Composer row: input, mic and send share one height & center line */
-        div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stTextInput"] label {
+        /* Composer row: input, mic and send share one height & center line.
+           Scoped via :has() to the one row containing the text input, so
+           welcome chips, level cards and sidebar buttons are untouched.
+           NOTE: v1.62 nests the real <button> below a tooltip wrapper, so
+           descendant selectors are required (direct-child never matches). */
+        div[data-testid="stHorizontalBlock"]:has([data-testid="stTextInput"]) {
+            align-items: center;
+        }
+        [data-testid="stTextInput"] > label {
             display: none;
         }
-        div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stTextInput"] input {
+        [data-testid="stTextInputRootElement"] {
             height: 42px;
         }
-        div[data-testid="stVerticalBlockBorderWrapper"] div.stButton > button {
-            height: 42px;
-            min-height: 42px;
-            padding: 0 10px;
-            display: inline-flex;
+        div[data-testid="stHorizontalBlock"]:has([data-testid="stTextInput"]) div.stButton button {
+            height: 42px !important;
+            min-height: 42px !important;
+            max-height: 42px;
+            width: 100%;
+            max-width: 100%;
+            box-sizing: border-box;
+            padding: 0 !important;
+            margin: 0 auto;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            overflow: hidden;
+        }
+        div[data-testid="stHorizontalBlock"]:has([data-testid="stTextInput"]) div.stButton button > p {
+            margin: 0 !important;
+            padding: 0 !important;
+            line-height: 1;
+            display: flex;
             align-items: center;
             justify-content: center;
         }
 
         /* Composer buttons round & tidy */
-        div.stButton > button {
+        div.stButton button {
             border-radius: 12px;
             font-size: 1.05rem;
         }
-        div.stButton > button[kind="primary"] {
+        div.stButton button[kind="primary"] {
             background: #10a37f;
             border-color: #10a37f;
         }
-        div.stButton > button[kind="primary"]:hover {
+        div.stButton button[kind="primary"]:hover {
             background: #0d8c6d;
             border-color: #0d8c6d;
         }
-        div.stButton > button[kind="primary"]:disabled {
+        div.stButton button[kind="primary"]:disabled {
             opacity: 0.45;
         }
-        div.stButton > button[kind="secondary"]:hover {
+        div.stButton button[kind="secondary"]:hover {
             border-color: #10a37f;
             color: #10a37f;
         }
