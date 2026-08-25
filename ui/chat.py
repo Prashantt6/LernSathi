@@ -48,6 +48,32 @@ def _local_css():
             border: none !important;
         }
 
+        /* Unified composer container */
+        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border-radius: 16px !important;
+            padding: 12px 14px !important;
+            background: rgba(128, 128, 128, 0.04);
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] > div {
+            gap: 0.35rem !important;
+        }
+
+        /* Composer row: input, mic and send share one height & center line */
+        div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stTextInput"] label {
+            display: none;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stTextInput"] input {
+            height: 42px;
+        }
+        div[data-testid="stVerticalBlockBorderWrapper"] div.stButton > button {
+            height: 42px;
+            min-height: 42px;
+            padding: 0 10px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
         /* Composer buttons round & tidy */
         div.stButton > button {
             border-radius: 12px;
@@ -63,6 +89,10 @@ def _local_css():
         }
         div.stButton > button[kind="primary"]:disabled {
             opacity: 0.45;
+        }
+        div.stButton > button[kind="secondary"]:hover {
+            border-color: #10a37f;
+            color: #10a37f;
         }
 
         /* Example chips on welcome screen */
@@ -218,15 +248,18 @@ def _welcome_state(level: str):
 # --------------------------------------------------
 
 def render_chat(messages: list, is_processing: bool, audio_history: dict,
-                level: str, autoplay_idx: int | None = None):
+                level: str, autoplay_idx: int | None = None,
+                stage_status: str | None = None):
     _local_css()
 
-    if not messages:
+    if not messages and not is_processing:
         _welcome_state(level)
         return
 
     for idx, msg in enumerate(messages):
         _render_message(msg, idx, audio_history, autoplay=(idx == autoplay_idx))
 
+    # Live pipeline status, rendered inline after the messages so previous
+    # chat stays visible while a stage is running.
     if is_processing:
-        st.caption("⏳ Working on your message…")
+        st.caption(stage_status or "⏳ Working on your message…")

@@ -3,77 +3,207 @@
 <head>
 <meta charset="utf-8" />
 <style>
-  html, body { margin: 0; padding: 0; background: transparent; }
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #wrap {
+    display: flex; align-items: center; gap: 10px;
+    height: 60px; padding: 2px 4px;
+    font-family: "Source Sans Pro", "Segoe UI", sans-serif;
+  }
+  #timer {
+    font-size: 0.92rem; font-weight: 700; min-width: 46px;
+    color: #8a8f98; font-variant-numeric: tabular-nums; flex: none;
+  }
+  #msg { color: #8a8f98; font-size: 0.85rem; white-space: nowrap; }
+  #wave { flex: 1 1 auto; min-width: 0; height: 40px; display: none; }
 </style>
 </head>
 <body>
+<div id="wrap">
+  <span id="timer">00:00</span>
+  <canvas id="wave"></canvas>
+  <span id="msg"></span>
+</div>
 <script>
 (function () {
   "use strict";
 
-  var started = false;
-  var audioCtx = null;
-  var sourceNode = null;
-  var procNode = null;
-  var mediaStream = null;
-  var samples = [];
-  var totalLen = 0;
+  var phase = "idle";        // idle | recording
+  var targetCmd = null;      // newest queued command: start | send | cancel
+  var lastCmdN = -1;         // dedupe: Streamlit may replay identical args
+  var chain = Promise.resolve();
+
+  var ctx = null, srcNode = null, procNode = null, analyser = null, mediaStream = null;
+  var samples = [], totalLen = 0, capRate = 48000;
+  var startedAt = 0, timerId = 0, rafId = 0;
+  var timeBuf = null;
+
+  var hist = [], NBARS = 56, dispAmp = 0;
+
+  var elTimer = document.getElementById("timer");
+  var elWave = document.getElementById("wave");
+  var elMsg = document.getElementById("msg");
+  var g2d = elWave.getContext("2d");
 
   function send(type, data) {
     var msg = Object.assign({ isStreamlitMessage: true, type: type }, data || {});
     window.parent.postMessage(msg, "*");
   }
+  function setHeight(h) { send("streamlit:setFrameHeight", { height: h }); }
+  function setValue(v) { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
 
   function componentReady() {
     send("streamlit:componentReady", { apiVersion: 1 });
-    send("streamlit:setFrameHeight", { height: 0 });
-  }
-
-  function setComponentValue(value) {
-    send("streamlit:setComponentValue", { value: value, dataType: "json" });
+    setHeight(0);
   }
 
   function onRender(event) {
     if (!event.data || event.data.type !== "streamlit:render") return;
-    var action = (event.data.args && event.data.args.action) || "idle";
-    if (!started) {
-      start();
-    } else if (action === "stop") {
-      stop(true);
+    var args = event.data.args || {};
+    if (typeof args.height === "number") setHeight(args.height);
+    var n = typeof args.cmd_n === "number" ? args.cmd_n : null;
+    if (args.action && n !== null && n !== lastCmdN) {
+      lastCmdN = n;
+      targetCmd = args.action;
+      chain = chain.then(exec).catch(function () {});
     }
-    // action === "idle" while recording -> keep going
   }
 
-  async function start() {
-    if (started) return;
-    try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
+  function exec() {
+    var cmd = targetCmd;
+    targetCmd = null;
+    if (!cmd) return Promise.resolve();
+    if (cmd === "start" && phase === "idle") return startCapture();
+    if (cmd === "send" && phase === "recording") return stopCapture(true);
+    if (cmd === "cancel" && phase === "recording") return stopCapture(false);
+    return Promise.resolve();
+  }
+
+  function startCapture() {
+    elMsg.textContent = "Waiting for microphone\u2026";
+    elWave.style.display = "block";
+    setHeight(64);
+    return navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true }
+    }).then(function (stream) {
+      mediaStream = stream;
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      capRate = ctx.sampleRate;
+      var resume = ctx.state === "suspended"
+        ? ctx.resume().catch(function () {})
+        : Promise.resolve();
+      return resume.then(function () {
+        srcNode = ctx.createMediaStreamSource(stream);
+        analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024;
+        timeBuf = new Uint8Array(analyser.fftSize);
+        procNode = ctx.createScriptProcessor(4096, 1, 1);
+        samples = [];
+        totalLen = 0;
+        procNode.onaudioprocess = function (e) {
+          var d = e.inputBuffer.getChannelData(0);
+          samples.push(new Float32Array(d));
+          totalLen += d.length;
+        };
+        srcNode.connect(analyser);
+        srcNode.connect(procNode);
+        procNode.connect(ctx.destination);
+        startedAt = Date.now();
+        timerId = setInterval(tickTimer, 200);
+        elMsg.textContent = "";
+        phase = "recording";
+        tickTimer();
+        loop();
       });
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      if (audioCtx.state === "suspended") {
-        try { await audioCtx.resume(); } catch (e) {}
+    }).catch(function (err) {
+      fail(String((err && err.message) || err || "Microphone unavailable"));
+    });
+  }
+
+  function stopCapture(emit) {
+    clearInterval(timerId); timerId = 0;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    var durationMs = Date.now() - startedAt;
+    try { if (procNode) procNode.disconnect(); } catch (e) {}
+    try { if (srcNode) srcNode.disconnect(); } catch (e) {}
+    try { if (mediaStream) mediaStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
+    try { if (ctx) ctx.close(); } catch (e) {}
+    ctx = srcNode = procNode = analyser = mediaStream = null;
+    phase = "idle";
+    if (emit) {
+      if (totalLen > 0) {
+        var wav = encodeWav(mergeSamples(), capRate);
+        setValue({
+          b64: bufToB64(wav),
+          id: Date.now(),
+          duration_ms: durationMs,
+          sample_rate: capRate
+        });
+      } else {
+        setValue({ error: "No audio captured.", id: Date.now() });
       }
-      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
-      procNode = audioCtx.createScriptProcessor(4096, 1, 1);
-      samples = [];
-      totalLen = 0;
-      procNode.onaudioprocess = function (e) {
-        var d = e.inputBuffer.getChannelData(0);
-        samples.push(new Float32Array(d));
-        totalLen += d.length;
-      };
-      sourceNode.connect(procNode);
-      procNode.connect(audioCtx.destination);
-      started = true;
-    } catch (err) {
-      setComponentValue({ error: String((err && err.message) || err), id: Date.now() });
+    }
+    samples = []; totalLen = 0; hist = []; dispAmp = 0;
+    uiRecordingOff();
+  }
+
+  function fail(message) {
+    if (phase === "recording") stopCapture(false);
+    setValue({ error: message, id: Date.now() });
+    uiRecordingOff();
+  }
+
+  function uiRecordingOff() {
+    elWave.style.display = "none";
+    elTimer.textContent = "00:00";
+    elMsg.textContent = "";
+    g2d.clearRect(0, 0, elWave.width, elWave.height);
+    setHeight(0);
+  }
+
+  function tickTimer() {
+    var s = Math.floor((Date.now() - startedAt) / 1000);
+    elTimer.textContent =
+      ("0" + Math.floor(s / 60)).slice(-2) + ":" + ("0" + (s % 60)).slice(-2);
+  }
+
+  function loop() {
+    if (phase !== "recording") return;
+    draw();
+    rafId = requestAnimationFrame(loop);
+  }
+
+  function draw() {
+    var dpr = window.devicePixelRatio || 1;
+    var W = elWave.clientWidth, H = elWave.clientHeight;
+    if (!W || !H) return;
+    if (elWave.width !== Math.round(W * dpr)) elWave.width = Math.round(W * dpr);
+    if (elWave.height !== Math.round(H * dpr)) elWave.height = Math.round(H * dpr);
+    g2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g2d.clearRect(0, 0, W, H);
+
+    var peak = 0.03;
+    if (analyser) {
+      analyser.getByteTimeDomainData(timeBuf);
+      for (var i = 0; i < timeBuf.length; i++) {
+        var v = Math.abs(timeBuf[i] - 128) / 128;
+        if (v > peak) peak = v;
+      }
+    }
+    dispAmp = Math.max(peak, dispAmp * 0.86);
+    hist.push(dispAmp);
+    while (hist.length > NBARS) hist.shift();
+
+    var slot = W / NBARS;
+    var bw = Math.max(2, slot * 0.55);
+    g2d.fillStyle = "#e5484d";
+    for (var j = 0; j < hist.length; j++) {
+      var bh = Math.max(2, Math.min(1, hist[j]) * (H - 4));
+      g2d.fillRect(j * slot + (slot - bw) / 2, (H - bh) / 2, bw, bh);
     }
   }
 
   function mergeSamples() {
-    var out = new Float32Array(totalLen);
-    var off = 0;
+    var out = new Float32Array(totalLen), off = 0;
     for (var i = 0; i < samples.length; i++) {
       out.set(samples[i], off);
       off += samples[i].length;
@@ -112,24 +242,9 @@
     return btoa(s);
   }
 
-  function stop(emit) {
-    if (!started) return;
-    started = false;
-    var rate = audioCtx.sampleRate;
-    try { procNode.disconnect(); } catch (e) {}
-    try { sourceNode.disconnect(); } catch (e) {}
-    try { mediaStream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {}
-    try { audioCtx.close(); } catch (e) {}
-    if (emit && totalLen > 0) {
-      var wav = encodeWav(mergeSamples(), rate);
-      setComponentValue({ b64: bufToB64(wav), id: Date.now(), sample_rate: rate });
-    }
-    samples = [];
-    totalLen = 0;
-  }
-
   window.addEventListener("message", onRender);
-  window.addEventListener("load", componentReady);
+  if (document.readyState === "complete") componentReady();
+  else window.addEventListener("load", componentReady);
 })();
 </script>
 </body>
